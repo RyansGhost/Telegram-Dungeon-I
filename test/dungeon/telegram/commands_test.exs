@@ -33,14 +33,78 @@ defmodule Dungeon.Telegram.CommandsTest do
     test "ignores plain chat, unknown commands and non-message updates", %{chat: chat} do
       assert send_text("hello there", chat) == nil
       assert send_text("/dance", chat) == nil
+      assert send_text("dance", chat) == nil
       assert send_text("/", chat) == nil
       assert Commands.handle(%{"edited_message" => %{"text" => "/join"}}) == nil
       assert Commands.handle(%{"message" => %{"photo" => []}}) == nil
     end
 
+    test "commands and their arguments are case-insensitive", %{chat: chat} do
+      reply("/Join", chat)
+      assert reply("/LOOK", chat) =~ "📍 Entrance"
+      start = Store.load(chat).start_room
+      [{dir, _} | _] = Map.to_list(Store.load(chat).rooms[start].exits)
+      assert reply("/GO #{String.upcase(dir)}", chat) =~ "heads #{dir}"
+    end
+
     test "falls back from username to first name to id", %{chat: chat} do
       assert reply("/join", chat, %{"id" => 1, "first_name" => "Al"}) =~ "Al joins"
       assert reply("/join", chat, %{"id" => 2}) =~ "player2 joins"
+    end
+  end
+
+  describe "without a slash" do
+    test "a bare command works, in any case, with trailing punctuation", %{chat: chat} do
+      assert reply("join", chat) =~ "alice joins"
+      assert reply("Look", chat) =~ "📍 Entrance"
+      assert reply("STATUS", chat) =~ "alice — level 1"
+      assert reply("attack!", chat) =~ "nothing here to fight"
+      assert reply("  party?  ", chat) =~ "party of 1"
+      assert reply("help", chat) =~ "Dungeon commands"
+    end
+
+    test "movement: go plus a direction, or a direction alone", %{chat: chat} do
+      reply("join", chat)
+      start = Store.load(chat).start_room
+      [{dir, dest} | _] = Map.to_list(Store.load(chat).rooms[start].exits)
+
+      assert reply("Go #{String.capitalize(dir)}", chat) =~ "heads #{dir}"
+      assert Store.load(chat).players[1].room_id == dest
+
+      back = %{"north" => "south", "south" => "north", "east" => "west", "west" => "east"}[dir]
+      assert reply(String.upcase(String.first(back)), chat) =~ "heads #{back}"
+      assert Store.load(chat).players[1].room_id == start
+    end
+
+    test "use and revive take one word", %{chat: chat} do
+      reply("join", chat)
+      assert reply("use potion", chat) =~ "You don't have a potion"
+      assert reply("revive bob", chat) =~ "no fallen adventurer"
+    end
+
+    test "ordinary chat is not mistaken for commands", %{chat: chat} do
+      reply("join", chat)
+
+      for text <- [
+            "hello",
+            "look at this!",
+            "go home",
+            "go north now",
+            "attack the goblin please",
+            "use the potion",
+            "revive",
+            "party time",
+            "!!!",
+            ""
+          ] do
+        assert send_text(text, chat) == nil, "#{inspect(text)} should be ignored"
+      end
+    end
+
+    test "newgame needs its slash", %{chat: chat} do
+      reply("join", chat)
+      assert send_text("newgame", chat) == nil
+      assert Store.load(chat).players |> Map.has_key?(1)
     end
   end
 

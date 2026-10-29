@@ -11,6 +11,10 @@ and revive fallen friends, then descend floor by floor as monsters get tougher.
 
 Add the bot to a group (or DM it) and send `/join`.
 
+Commands are case-insensitive and the slash is optional: `/look`, `Look` and `look!` all work.
+Without a slash, a message only counts if it is exactly a command (`look`, `go north`,
+`use potion`), so ordinary chat like "look at this" is ignored. `/newgame` always needs its slash.
+
 | Command | What it does |
 |---|---|
 | `/join`, `/leave` | Enter or leave this chat's dungeon |
@@ -29,7 +33,11 @@ XP and gold from a kill are split among everyone standing in the room.
 ## Deploying (Docker)
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
-2. (Optional) Bots always receive `/commands` in groups, so privacy mode can stay on.
+2. (Optional) To use commands **without the slash in groups**, turn off privacy mode: in
+   @BotFather, send `/setprivacy`, pick the bot, choose **Disable**, then remove the bot from each
+   group and add it back (the change only applies when it joins). With privacy mode on, Telegram only
+   delivers messages starting with `/` to bots in groups. Slash commands, and everything in direct
+   messages, work either way.
 3. Configure and start:
 
    ```bash
