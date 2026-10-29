@@ -51,6 +51,7 @@ Environment variables:
 | `TELEGRAM_BOT_TOKEN` | — | Required |
 | `DUNGEON_DB` | `/data/dungeon.dets` | State file path |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warning`, `error` |
+| `HTTPS_PROXY` | — | Optional outbound proxy, e.g. `http://proxy.lan:3128` |
 
 Back up the game state:
 

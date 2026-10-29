@@ -4,6 +4,21 @@ defmodule Dungeon.Telegram.Client do
   so the app has no third-party dependencies.
   """
 
+  @doc """
+  Routes requests through `HTTPS_PROXY` when set (`:httpc` ignores the
+  environment on its own).
+  """
+  def configure_proxy do
+    case System.get_env("HTTPS_PROXY") || System.get_env("https_proxy") do
+      empty when empty in [nil, ""] ->
+        :ok
+
+      url ->
+        %URI{host: host, port: port} = URI.parse(url)
+        :httpc.set_options(https_proxy: {{String.to_charlist(host), port}, []})
+    end
+  end
+
   def get_updates(token, offset, timeout) do
     call(
       token,

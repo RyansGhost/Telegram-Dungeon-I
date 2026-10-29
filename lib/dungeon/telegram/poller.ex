@@ -15,6 +15,7 @@ defmodule Dungeon.Telegram.Poller do
 
   @impl true
   def init(token) do
+    Client.configure_proxy()
     send(self(), :register_commands)
     {:ok, %{token: token, offset: 0}}
   end
