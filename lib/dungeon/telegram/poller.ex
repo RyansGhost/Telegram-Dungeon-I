@@ -34,7 +34,7 @@ defmodule Dungeon.Telegram.Poller do
   def handle_info(:poll, state) do
     case Client.get_updates(state.token, state.offset, @long_poll_seconds) do
       {:ok, updates} ->
-        Enum.each(updates, &dispatch(state.token, &1))
+        dispatch(state.token, updates)
         send(self(), :poll)
         {:noreply, %{state | offset: next_offset(updates, state.offset)}}
 
@@ -48,12 +48,30 @@ defmodule Dungeon.Telegram.Poller do
   defp next_offset([], offset), do: offset
   defp next_offset(updates, _offset), do: List.last(updates)["update_id"] + 1
 
-  defp dispatch(token, update) do
-    Task.Supervisor.start_child(Dungeon.TaskSupervisor, fn ->
-      with {chat_id, reply} <- Commands.handle(update),
-           {:error, reason} <- Client.send_message(token, chat_id, reply) do
-        Logger.warning("sendMessage to #{chat_id} failed: #{inspect(reason)}")
-      end
-    end)
+  # Updates run in order within a chat (so commands apply, and replies
+  # arrive, in the order they were sent) and concurrently across chats.
+  # The batch finishes before the next poll.
+  defp dispatch(token, updates) do
+    Dungeon.TaskSupervisor
+    |> Task.Supervisor.async_stream_nolink(
+      updates |> Enum.group_by(&get_in(&1, ["message", "chat", "id"])) |> Map.values(),
+      fn chat_updates -> Enum.each(chat_updates, &handle_update(token, &1)) end,
+      max_concurrency: 16,
+      timeout: :timer.seconds(60),
+      on_timeout: :kill_task
+    )
+    |> Stream.run()
+  end
+
+  defp handle_update(token, update) do
+    with {chat_id, reply} <- Commands.handle(update),
+         {:error, reason} <- Client.send_message(token, chat_id, reply) do
+      Logger.warning("sendMessage to #{chat_id} failed: #{inspect(reason)}")
+    end
+  rescue
+    e ->
+      Logger.error(
+        "Update #{update["update_id"]} failed: " <> Exception.format(:error, e, __STACKTRACE__)
+      )
   end
 end

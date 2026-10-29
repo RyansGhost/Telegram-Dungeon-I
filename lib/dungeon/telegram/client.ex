@@ -37,9 +37,13 @@ defmodule Dungeon.Telegram.Client do
   end
 
   defp call(token, method, body, timeout \\ :timer.seconds(15)) do
-    url = ~c"https://api.telegram.org/bot#{token}/#{method}"
+    base = Application.get_env(:dungeon, :api_base, "https://api.telegram.org")
+    url = ~c"#{base}/bot#{token}/#{method}"
     request = {url, [], ~c"application/json", IO.iodata_to_binary(:json.encode(body))}
-    http_opts = [timeout: timeout, connect_timeout: :timer.seconds(10), ssl: ssl_opts()]
+    # Explicit even for plain HTTP: :httpc otherwise loads the OS CA store
+    # for every request, which raises on systems without one.
+    ssl = if String.starts_with?(base, "https:"), do: ssl_opts(), else: []
+    http_opts = [timeout: timeout, connect_timeout: :timer.seconds(10), ssl: ssl]
 
     case :httpc.request(:post, request, http_opts, body_format: :binary) do
       {:ok, {{_, status, _}, _headers, resp}} ->

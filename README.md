@@ -1,5 +1,7 @@
 # Telegram Dungeon
 
+[![CI](https://github.com/RyansGhost/Telegram-Dungeon-I/actions/workflows/ci.yml/badge.svg)](https://github.com/RyansGhost/Telegram-Dungeon-I/actions/workflows/ci.yml)
+
 A multiplayer dungeon crawler that runs in Telegram group chats, written in Elixir/OTP.
 Each chat gets its own shared, procedurally generated dungeon. Everyone in the group
 explores it together: you see who's in the room with you, gang up on monsters, split the loot,
@@ -71,9 +73,18 @@ Requires Elixir 1.17+ on OTP 27+. The project has **no third-party dependencies*
 built-in `:json` and `:httpc`.
 
 ```bash
-mix test
+mix test            # full suite
+mix test --cover    # with coverage (CI requires 90%+)
 TELEGRAM_BOT_TOKEN=... iex -S mix
 ```
+
+The test suite covers every game rule against a small hand-built dungeon
+(`test/support/fixtures.ex`), checks structural invariants of generated floors across
+many seeds, and exercises the HTTP client and poller end to end against an in-process
+fake Telegram server (`test/support/fake_telegram.ex`), so no network or token is needed.
+
+CI (`.github/workflows/ci.yml`) checks formatting, compiles with warnings as errors,
+runs the tests with coverage on Elixir 1.17 and 1.18, and builds the Docker image.
 
 Layout:
 

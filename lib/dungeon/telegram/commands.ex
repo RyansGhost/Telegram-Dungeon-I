@@ -30,13 +30,13 @@ defmodule Dungeon.Telegram.Commands do
   def handle(%{
         "message" => %{"text" => "/" <> text, "chat" => %{"id" => chat_id}, "from" => from}
       }) do
-    [command | args] = String.split(text)
-    # Group chats send "/go@MyDungeonBot north".
-    command = command |> String.split("@") |> hd() |> String.downcase()
-
-    case reply(command, chat_id, from, args) do
-      nil -> nil
-      text -> {chat_id, text}
+    with [command | args] <- String.split(text),
+         # Group chats send "/go@MyDungeonBot north".
+         command = command |> String.split("@") |> hd() |> String.downcase(),
+         text when is_binary(text) <- reply(command, chat_id, from, args) do
+      {chat_id, text}
+    else
+      _ -> nil
     end
   end
 
