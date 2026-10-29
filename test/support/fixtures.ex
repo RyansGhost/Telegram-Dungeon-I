@@ -9,6 +9,7 @@ defmodule Dungeon.Fixtures do
 
   alias Dungeon.{Monster, Player, Room, State}
 
+  @doc "The four-room dungeon above, with no players, monsters or loot."
   def state do
     rooms = %{
       "a" => %Room{id: "a", name: "Entrance", description: "Safe.", exits: %{"east" => "b"}},
@@ -31,19 +32,24 @@ defmodule Dungeon.Fixtures do
     %State{chat_id: -1, seed: 42, depth: 1, start_room: "a", rooms: rooms}
   end
 
+  @doc "A fresh player at the entrance; override any field with `attrs`."
   def player(id, name, attrs \\ []) do
     struct!(%Player{user_id: id, name: name, room_id: "a"}, attrs)
   end
 
+  @doc "A weak rat (5 HP, 1 attack); override any field with `attrs`."
   def monster(attrs \\ []) do
     struct!(%Monster{name: "Rat", hp: 5, max_hp: 5, attack: 1, xp: 10, gold: 4}, attrs)
   end
 
+  @doc "Adds one player, or a list of players, to the state."
   def add(%State{} = state, players) when is_list(players),
     do: Enum.reduce(players, state, &add(&2, &1))
 
   def add(%State{} = state, %Player{} = p), do: put_in(state.players[p.user_id], p)
 
+  @doc "Puts `monster` (or `nil`, to clear it) in a room."
   def put_monster(state, room_id, monster), do: put_in(state.rooms[room_id].monster, monster)
+  @doc "Replaces the loot on a room's floor."
   def put_items(state, room_id, items), do: put_in(state.rooms[room_id].items, items)
 end

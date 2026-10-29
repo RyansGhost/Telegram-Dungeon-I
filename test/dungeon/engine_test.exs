@@ -1,3 +1,10 @@
+# Game rules, tested against the small hand-built dungeon in
+# test/support/fixtures.ex rather than a generated one, so every room, exit,
+# monster and item is known exactly.
+#
+# Randomness: combat damage is 1..attack, so tests that need exact numbers
+# set attack values of 1 to make the roll certain. Tests about chance (like
+# fleeing) instead try many seeds and check the range of outcomes.
 defmodule Dungeon.EngineTest do
   use ExUnit.Case, async: true
 
@@ -5,6 +12,7 @@ defmodule Dungeon.EngineTest do
 
   alias Dungeon.{Engine, Player}
 
+  # Fix the random sequence so any remaining randomness repeats run to run.
   setup do
     :rand.seed(:exsss, {1, 2, 3})
     :ok
@@ -135,6 +143,8 @@ defmodule Dungeon.EngineTest do
       assert msg =~ "/revive"
     end
 
+    # Fleeing is a 30% chance, so try 200 seeds: every outcome must be valid,
+    # and both outcomes (hit and clean escape) must actually occur.
     test "fleeing a monster sometimes costs HP but never more than its attack" do
       d =
         state()
@@ -156,6 +166,7 @@ defmodule Dungeon.EngineTest do
       assert false in outcomes, "expected at least one clean escape"
     end
 
+    # Find a seed where the parting blow lands on a 1 HP player.
     test "a parting blow can knock a player out, leaving them in the room" do
       d =
         state()
@@ -186,6 +197,8 @@ defmodule Dungeon.EngineTest do
       assert {:error, _} = Engine.attack(d, 1)
     end
 
+    # attack: 1 makes both rolls certain: alice deals 1 + level 2 = 3, and
+    # the rat deals 1.
     test "deals 1..attack plus level damage and takes a counterattack" do
       d =
         state()
@@ -199,6 +212,8 @@ defmodule Dungeon.EngineTest do
       assert text =~ "Rat [7/10] strikes alice for 1. (19/20 HP)"
     end
 
+    # Over 100 rounds, record who gets hurt: only alice and bob are standing
+    # in the room, so only they should ever be hit.
     test "counterattacks only hit living players in the same room" do
       d =
         state()
@@ -244,6 +259,7 @@ defmodule Dungeon.EngineTest do
 
       assert {:ok, d, text} = Engine.attack(d, 1)
       assert d.rooms["a"].monster == nil
+      # 11 XP and 5 gold between alice and bob, rounded down.
       assert text =~ "Rat is slain! Each of 2 adventurer(s) gains 5 XP and 2 gold"
 
       assert {d.players[1].xp, d.players[1].gold} == {5, 2}
@@ -453,6 +469,7 @@ defmodule Dungeon.EngineTest do
 
     test "patches everyone up to at least half HP, carrying the fallen", %{d: d} do
       {:ok, d2, _} = Engine.descend(d, 1)
+      # alice (4 HP) and bob (down) rise to half of 20; carol (18) is unchanged.
       assert d2.players[1].hp == 10
       assert d2.players[2].hp == 10
       assert d2.players[3].hp == 18

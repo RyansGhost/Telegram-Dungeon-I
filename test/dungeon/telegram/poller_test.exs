@@ -1,3 +1,6 @@
+# The polling loop, end to end: a real Poller talks to Dungeon.FakeTelegram,
+# which feeds it scripted batches of updates and reports every request
+# (including the bot's replies) back to the test.
 defmodule Dungeon.Telegram.PollerTest do
   # Not async: the poller is a named process and uses the global API base.
   use ExUnit.Case
@@ -12,7 +15,8 @@ defmodule Dungeon.Telegram.PollerTest do
     %{chat: System.unique_integer()}
   end
 
-  # Serves `batches` of updates in order, then empty polls.
+  # Serves `batches` of updates in order, then empty polls. Empty responses
+  # are delayed slightly so the poller doesn't spin while the test waits.
   defp fake_telegram(batches) do
     {:ok, queue} = Agent.start_link(fn -> batches end)
 
@@ -35,6 +39,7 @@ defmodule Dungeon.Telegram.PollerTest do
     Application.put_env(:dungeon, :api_base, base)
   end
 
+  # A text message from alice, as Telegram would deliver it.
   defp update(id, chat, text) do
     %{
       update_id: id,
@@ -69,6 +74,7 @@ defmodule Dungeon.Telegram.PollerTest do
   end
 
   test "keeps running when Telegram is unreachable" do
+    # As in ClientTest: a port with nothing listening on it.
     {:ok, socket} = :gen_tcp.listen(0, [])
     {:ok, port} = :inet.port(socket)
     :gen_tcp.close(socket)

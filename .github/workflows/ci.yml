@@ -1,3 +1,5 @@
+# Runs on every push to main and on every pull request. Two jobs, run in
+# parallel: the test suite (on two Elixir versions) and a Docker build.
 name: CI
 
 on:
@@ -5,6 +7,7 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only token: CI only needs to check out the code.
 permissions:
   contents: read
 
@@ -13,9 +16,13 @@ jobs:
     name: Test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
     strategy:
+      # Let both versions finish even if one fails, to see whether a failure
+      # is version-specific.
       fail-fast: false
       matrix:
         include:
+          # 1.17 is the minimum mix.exs supports; 1.18 checks forward
+          # compatibility.
           - elixir: "1.17"
             otp: "27"
           - elixir: "1.18"
@@ -30,21 +37,26 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
+      # Reuse compiled files from earlier runs to speed up compilation.
       - uses: actions/cache@v4
         with:
           path: _build
           key: build-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.exs') }}
           restore-keys: build-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-
 
+      # Fails if any file differs from `mix format` output.
       - name: Check formatting
         run: mix format --check-formatted
 
       - name: Compile
         run: mix compile --warnings-as-errors
 
+      # Also enforces the coverage threshold set in mix.exs.
       - name: Test with coverage
         run: mix test --cover --warnings-as-errors
 
+  # Builds the production image (without pushing it anywhere) to catch
+  # Dockerfile breakage. Layers are cached between runs.
   docker:
     name: Docker image builds
     runs-on: ubuntu-latest

@@ -1,3 +1,6 @@
+# The per-chat game process: starting on demand, saving changes,
+# serializing commands, and stopping when idle. Each test uses its own chat
+# id, so each gets its own server and saved state.
 defmodule Dungeon.GameServerTest do
   use ExUnit.Case, async: true
 
@@ -7,6 +10,7 @@ defmodule Dungeon.GameServerTest do
     %{chat: System.unique_integer()}
   end
 
+  # The pid of the chat's running server.
   defp server(chat) do
     [{pid, _}] = Registry.lookup(Dungeon.Registry, chat)
     pid
@@ -51,6 +55,7 @@ defmodule Dungeon.GameServerTest do
     pid = server(chat)
     ref = Process.monitor(pid)
 
+    # Simulate 30 idle minutes by delivering the timeout message directly.
     send(pid, :timeout)
     assert_receive {:DOWN, ^ref, _, _, :normal}
 

@@ -1,3 +1,7 @@
+# Floor generation. Layouts are random, so rather than checking specific
+# floors, these tests check properties that must hold for every floor
+# (connectivity, symmetric exits, one guarded stairwell, ...) across a
+# spread of seeds and depths.
 defmodule Dungeon.WorldTest do
   use ExUnit.Case, async: true
 
@@ -87,6 +91,7 @@ defmodule Dungeon.WorldTest do
       assert m.hp > 0 and m.attack > 0
     end
 
+    # Draw 300 monsters per depth and see which kinds turn up.
     test "deeper floors unlock tougher monsters" do
       names = fn depth ->
         Enum.reduce(1..300, {MapSet.new(), :rand.seed_s(:exsss, {depth, 2, 3})}, fn _,
@@ -116,6 +121,7 @@ defmodule Dungeon.WorldTest do
     end
   end
 
+  # True if room `b` is one grid square from room `a` in direction `dir`.
   defp adjacent?(a, b, dir) do
     [ax, ay] = coords(a)
     [bx, by] = coords(b)
@@ -130,6 +136,7 @@ defmodule Dungeon.WorldTest do
 
   defp coords(id), do: id |> String.split(",") |> Enum.map(&String.to_integer/1)
 
+  # Depth-first search: every room id reachable from the ids in the list.
   defp reachable(_rooms, [], seen), do: seen
 
   defp reachable(rooms, [id | rest], seen) do

@@ -7,6 +7,10 @@ defmodule Dungeon.FakeTelegram do
   `(method, body) -> {status, map} | {:raw, status, binary}`.
   """
 
+  @doc """
+  Starts the server on a free local port. Returns `{pid, base_url}`; pass
+  `base_url` as the client's `:api_base`.
+  """
   def start(handler) do
     owner = self()
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
@@ -16,6 +20,8 @@ defmodule Dungeon.FakeTelegram do
     {pid, "http://127.0.0.1:#{port}"}
   end
 
+  # Serves one connection at a time, forever. Each response closes its
+  # connection, so every request arrives on a fresh one.
   defp accept(listen, owner, handler) do
     {:ok, socket} = :gen_tcp.accept(listen)
     serve(socket, owner, handler)
@@ -43,6 +49,11 @@ defmodule Dungeon.FakeTelegram do
     :gen_tcp.close(socket)
   end
 
+  # Reads one request using the VM's built-in HTTP parser (packet:
+  # :http_bin), which yields the request line and then one header at a
+  # time. The body is then read raw, using Content-Length. Returns
+  # {:ok, method, body}, where the method is the last path segment, e.g.
+  # "sendMessage" from "/bot<token>/sendMessage".
   defp read_request(socket) do
     :ok = :inet.setopts(socket, packet: :http_bin)
 

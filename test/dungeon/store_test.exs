@@ -1,3 +1,6 @@
+# Saving and loading dungeons. These use the application's real Store (on
+# the test database configured in config.exs), with a unique chat id per
+# test so they don't see each other's data.
 defmodule Dungeon.StoreTest do
   # Not async: one test restarts the store, which every other test relies on.
   use ExUnit.Case
@@ -37,6 +40,8 @@ defmodule Dungeon.StoreTest do
     id = chat_id()
     Store.save(Engine.new(id, 77))
 
+    # Kill the store outright (no clean shutdown) and wait for the
+    # supervisor to start a replacement.
     pid = Process.whereis(Store)
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
@@ -48,6 +53,7 @@ defmodule Dungeon.StoreTest do
     assert Store.load(id).seed == 77
   end
 
+  # Polls `fun` every 20 ms, for up to a second, until it returns true.
   defp wait_for(fun, tries \\ 50) do
     cond do
       fun.() -> :ok

@@ -1,3 +1,6 @@
+# The Bot API client, tested against Dungeon.FakeTelegram (a local HTTP
+# server) by pointing the :api_base setting at it. The fake reports each
+# request it receives to the test as a message, which assert_receive checks.
 defmodule Dungeon.Telegram.ClientTest do
   # Not async: these tests change the global API base and :httpc options.
   use ExUnit.Case
@@ -52,6 +55,7 @@ defmodule Dungeon.Telegram.ClientTest do
   end
 
   test "connection failures are errors, not crashes" do
+    # Grab a free port and close it again, so nothing is listening there.
     {:ok, socket} = :gen_tcp.listen(0, [])
     {:ok, port} = :inet.port(socket)
     :gen_tcp.close(socket)
@@ -62,6 +66,7 @@ defmodule Dungeon.Telegram.ClientTest do
   end
 
   describe "configure_proxy/0" do
+    # Proxy settings are global to :httpc, so restore them afterwards.
     setup do
       {:ok, [https_proxy: original]} = :httpc.get_options([:https_proxy])
 

@@ -86,8 +86,10 @@ fake Telegram server (`test/support/fake_telegram.ex`), so no network or token i
 CI (`.github/workflows/ci.yml`) checks formatting, compiles with warnings as errors,
 runs the tests with coverage on Elixir 1.17 and 1.18, and builds the Docker image.
 
-Layout:
+Layout (each module's docs explain how it works; `h Dungeon.Engine` in `iex -S mix` shows them):
 
+- `lib/dungeon/application.ex`: the supervision tree, and how a command flows through it
+- `lib/dungeon/structs.ex`: the data model (`State`, `Room`, `Player`, `Monster`)
 - `lib/dungeon/world.ex`: seeded procedural floor generation (deterministic per seed + depth)
 - `lib/dungeon/engine.ex`: game rules as pure functions over `Dungeon.State`
 - `lib/dungeon/game_server.ex`: one GenServer per chat; serializes commands, persists changes, stops when idle

@@ -1,11 +1,15 @@
+# Run with: docker compose up -d --build
 services:
   dungeon:
     build: .
     image: telegram-dungeon:latest
     container_name: telegram-dungeon
+    # Come back after crashes and host reboots, unless stopped by hand.
     restart: unless-stopped
+    # TELEGRAM_BOT_TOKEN and optional settings (see .env.example).
     env_file: .env
     volumes:
+      # Saved games. A named volume keeps them across rebuilds and upgrades.
       - dungeon-data:/data
 
 volumes:

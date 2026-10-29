@@ -1,9 +1,14 @@
+# Build output and generated reports
 /_build/
 /deps/
 /cover/
 /doc/
-/tmp/
-/data/
 erl_crash.dump
 *.ez
+
+# Test and local databases
+/tmp/
+/data/
+
+# Holds the bot token: never commit it.
 .env

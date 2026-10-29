@@ -1,3 +1,6 @@
+# Command parsing and routing, from a raw Telegram update to the reply.
+# These run the real GameServer and Store, so they check the whole path
+# below the network layer.
 defmodule Dungeon.Telegram.CommandsTest do
   use ExUnit.Case, async: true
 
@@ -8,6 +11,7 @@ defmodule Dungeon.Telegram.CommandsTest do
     %{chat: System.unique_integer()}
   end
 
+  # Feeds a text message to Commands.handle/1, shaped like a real update.
   defp send_text(text, chat, from \\ %{"id" => 1, "username" => "alice"}) do
     Commands.handle(%{
       "update_id" => 1,
@@ -15,6 +19,7 @@ defmodule Dungeon.Telegram.CommandsTest do
     })
   end
 
+  # Like send_text/3, but asserts there was a reply to this chat and returns it.
   defp reply(text, chat, from \\ %{"id" => 1, "username" => "alice"}) do
     {^chat, reply} = send_text(text, chat, from)
     reply
@@ -56,6 +61,8 @@ defmodule Dungeon.Telegram.CommandsTest do
   end
 
   describe "game commands" do
+    # The dungeon here is randomly generated, so read its layout from the
+    # store to know which way is open.
     test "movement shortcuts and /go", %{chat: chat} do
       reply("/join", chat)
       start = Store.load(chat).start_room
