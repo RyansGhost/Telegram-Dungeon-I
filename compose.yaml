@@ -1,0 +1,12 @@
+services:
+  dungeon:
+    build: .
+    image: telegram-dungeon:latest
+    container_name: telegram-dungeon
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - dungeon-data:/data
+
+volumes:
+  dungeon-data:
