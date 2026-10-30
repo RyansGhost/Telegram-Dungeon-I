@@ -1,7 +1,7 @@
 defmodule Dungeon.Telegram.Client do
   @moduledoc """
-  Minimal Telegram Bot API client built on OTP's `:httpc` and `:json`,
-  so the app has no third-party dependencies.
+  Minimal Telegram Bot API client built on OTP's built-in `:httpc` and
+  `:json`, so talking to Telegram needs no extra libraries.
 
   Every Bot API method is an HTTPS POST to
   `https://api.telegram.org/bot<token>/<method>` with a JSON body. Telegram
@@ -9,7 +9,9 @@ defmodule Dungeon.Telegram.Client do
   "description": ...}` on failure.
 
   Each function returns `{:ok, result}` or `{:error, reason}`; it never
-  raises, so network trouble can't crash the caller. The API base URL can be
+  raises, so network trouble can't crash the caller. When Telegram says a
+  request was rate limited (429), it is retried once after the wait Telegram
+  asks for, if that's 30 seconds or less. The API base URL can be
   overridden with the `:api_base` application setting, which the tests use
   to point the client at a local fake server.
   """
@@ -18,6 +20,11 @@ defmodule Dungeon.Telegram.Client do
   Routes requests through `HTTPS_PROXY` when set (`:httpc` ignores the
   environment on its own). Called once, when the poller starts.
   """
+  # Telegram's limit on one message, in UTF-16 code units (see utf16_length/1).
+  @max_message_length 4096
+  # The longest rate-limit wait that is worth sitting out before retrying.
+  @max_retry_after 30
+
   def configure_proxy do
     case System.get_env("HTTPS_PROXY") || System.get_env("https_proxy") do
       empty when empty in [nil, ""] ->
@@ -47,10 +54,65 @@ defmodule Dungeon.Telegram.Client do
     )
   end
 
-  @doc "Posts a plain-text message to a chat (`sendMessage`)."
+  @doc "Returns the bot's own user record (`getMe`), including its `username`."
+  def get_me(token), do: call(token, "getMe", %{})
+
+  @doc """
+  Posts a plain-text message to a chat (`sendMessage`). Text longer than
+  Telegram allows is sent as several messages, split at line breaks (see
+  split_message/2). Stops at the first part that fails.
+  """
   def send_message(token, chat_id, text) do
-    call(token, "sendMessage", %{chat_id: chat_id, text: text})
+    text
+    |> split_message()
+    |> Enum.reduce_while({:ok, nil}, fn part, _ ->
+      case call(token, "sendMessage", %{chat_id: chat_id, text: part}) do
+        {:ok, _} = ok -> {:cont, ok}
+        error -> {:halt, error}
+      end
+    end)
   end
+
+  @doc """
+  Splits `text` into parts no longer than `limit`, packing whole lines into
+  each part. Breaks fall between lines, which the split drops (joining the
+  parts with newlines gives back the text), except that a single line
+  longer than `limit` is itself cut between characters.
+  """
+  def split_message(text, limit \\ @max_message_length) do
+    text
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      if utf16_length(line) <= limit, do: [line], else: pack(String.graphemes(line), "", limit)
+    end)
+    |> pack("\n", limit)
+  end
+
+  # Greedily joins `pieces` with `separator` into as few strings as possible,
+  # each no longer than `limit`. Each piece must already fit on its own.
+  defp pack(pieces, separator, limit) do
+    Enum.chunk_while(
+      pieces,
+      nil,
+      fn
+        piece, nil ->
+          {:cont, piece}
+
+        piece, acc ->
+          joined = acc <> separator <> piece
+          if utf16_length(joined) <= limit, do: {:cont, joined}, else: {:cont, acc, piece}
+      end,
+      fn
+        nil -> {:cont, nil}
+        acc -> {:cont, acc, nil}
+      end
+    )
+  end
+
+  # Length as Telegram counts it: in UTF-16 code units, where most emoji
+  # count as 2.
+  defp utf16_length(text),
+    do: div(byte_size(:unicode.characters_to_binary(text, :utf8, :utf16)), 2)
 
   @doc """
   Sets the command menu Telegram shows when users type `/`
@@ -60,9 +122,22 @@ defmodule Dungeon.Telegram.Client do
     call(token, "setMyCommands", %{commands: commands})
   end
 
-  # Makes one Bot API call: POSTs `body` as JSON, then unwraps Telegram's
-  # {"ok": ..., "result": ...} envelope.
+  # Makes one Bot API call, retrying once if it was rate limited.
   defp call(token, method, body, timeout \\ :timer.seconds(15)) do
+    case request(token, method, body, timeout) do
+      {:error, {429, %{"parameters" => %{"retry_after" => wait}}}}
+      when is_integer(wait) and wait <= @max_retry_after ->
+        Process.sleep(:timer.seconds(wait))
+        request(token, method, body, timeout)
+
+      result ->
+        result
+    end
+  end
+
+  # Makes one HTTP request: POSTs `body` as JSON, then unwraps Telegram's
+  # {"ok": ..., "result": ...} envelope.
+  defp request(token, method, body, timeout) do
     base = Application.get_env(:dungeon, :api_base, "https://api.telegram.org")
     # :httpc wants charlists (~c"...") rather than strings for the URL and
     # content type.

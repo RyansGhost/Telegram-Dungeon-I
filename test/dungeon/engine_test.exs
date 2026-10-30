@@ -34,6 +34,20 @@ defmodule Dungeon.EngineTest do
     end
   end
 
+  describe "refresh_name/3" do
+    test "renames a player whose Telegram name changed" do
+      d = add(state(), player(1, "alice"))
+      assert Engine.refresh_name(d, 1, "alicia").players[1].name == "alicia"
+    end
+
+    test "returns the very same state when nothing changes" do
+      d = add(state(), player(1, "alice"))
+      # Identical, so GameServer knows there is nothing to save.
+      assert Engine.refresh_name(d, 1, "alice") === d
+      assert Engine.refresh_name(d, 2, "bob") === d
+    end
+  end
+
   describe "join/3" do
     test "places a new player at the entrance and describes it" do
       assert {:ok, d, text} = Engine.join(state(), 1, "alice")
@@ -133,8 +147,12 @@ defmodule Dungeon.EngineTest do
     end
 
     test "rejects a missing direction", %{d: d} do
-      assert {:error, msg} = Engine.move(d, 1, "")
-      assert msg =~ "Exits: east"
+      assert {:error, "Go where? Exits: east"} = Engine.move(d, 1, "")
+    end
+
+    test "names blocked shorthands in full", %{d: d} do
+      assert {:error, "You can't go north. Exits: east"} = Engine.move(d, 1, "N")
+      assert {:error, "You can't go up. Exits: east"} = Engine.move(d, 1, "Up")
     end
 
     test "downed players can't move" do
@@ -346,6 +364,12 @@ defmodule Dungeon.EngineTest do
       {:ok, d, text} = Engine.use_item(d, 1, "potion")
       assert d.players[1].hp == 20
       assert text =~ "recovers 5 HP"
+    end
+
+    test "a potion isn't wasted at full health" do
+      d = add(state(), player(1, "alice", inventory: ["potion"]))
+      assert {:error, msg} = Engine.use_item(d, 1, "potion")
+      assert msg =~ "already at full health"
     end
 
     test "an elixir raises max HP by 3 and heals fully" do

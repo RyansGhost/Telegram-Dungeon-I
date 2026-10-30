@@ -79,13 +79,13 @@ defmodule Dungeon.Store do
           PlayerRow,
           :user_id,
           chat_id,
-          players_of(previous),
+          part(previous, :players),
           state.players,
           &player_row/1,
           now
         )
 
-        sync(RoomRow, :room_id, chat_id, rooms_of(previous), state.rooms, &room_row/1, now)
+        sync(RoomRow, :room_id, chat_id, part(previous, :rooms), state.rooms, &room_row/1, now)
         :ok
       end)
 
@@ -123,11 +123,9 @@ defmodule Dungeon.Store do
     )
   end
 
-  defp players_of(nil), do: %{}
-  defp players_of(state), do: state.players
-
-  defp rooms_of(nil), do: %{}
-  defp rooms_of(state), do: state.rooms
+  # The players or rooms of the previously saved state; none if never saved.
+  defp part(nil, _key), do: %{}
+  defp part(%State{} = state, key), do: Map.fetch!(state, key)
 
   ## Conversions between game structs and database rows
 

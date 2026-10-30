@@ -9,6 +9,9 @@ defmodule Dungeon.Telegram.Poller do
   is handled once. If Telegram can't be reached, the poller logs a warning
   and tries again in 5 seconds rather than crashing.
 
+  A command that fails (e.g. because the database is unreachable) is logged,
+  and the player gets a short apology instead of silence.
+
   Telegram allows only one poller per bot: if a second copy of the bot is
   running anywhere, the two keep cutting each other off with 409 Conflict
   errors. A webhook set on the bot also causes 409s (delete it first).
@@ -20,30 +23,45 @@ defmodule Dungeon.Telegram.Poller do
 
   @long_poll_seconds 30
   @retry_after :timer.seconds(5)
+  @apology "⚠️ Something went wrong handling that. Please try again in a moment."
 
   def start_link(token), do: GenServer.start_link(__MODULE__, token, name: __MODULE__)
 
   # The network work is done in handle_info/2 via messages to self(), so
   # init/1 returns at once and doesn't hold up application startup.
-  # `offset` 0 means "everything not yet acknowledged".
+  # `offset` 0 means "everything not yet acknowledged"; `username` is the
+  # bot's own name, filled in by :setup.
   @impl true
   def init(token) do
     Client.configure_proxy()
-    send(self(), :register_commands)
-    {:ok, %{token: token, offset: 0}}
+    send(self(), :setup)
+    {:ok, %{token: token, offset: 0, username: nil}}
   end
 
-  # Runs once at startup. A failure here isn't fatal: commands still work
-  # without the menu.
+  # Runs once at startup: registers the command menu and learns the bot's
+  # username (so commands addressed to other bots can be ignored). Neither
+  # is fatal if it fails: commands still work without the menu, and without
+  # a username every mention is accepted.
   @impl true
-  def handle_info(:register_commands, state) do
+  def handle_info(:setup, state) do
     case Client.set_my_commands(state.token, Commands.menu()) do
       {:ok, _} -> Logger.info("Registered bot command menu")
       {:error, reason} -> Logger.warning("setMyCommands failed: #{inspect(reason)}")
     end
 
+    username =
+      case Client.get_me(state.token) do
+        {:ok, %{"username" => username}} ->
+          Logger.info("Running as @#{username}")
+          username
+
+        other ->
+          Logger.warning("getMe failed: #{inspect(other)}; accepting commands for any bot")
+          nil
+      end
+
     send(self(), :poll)
-    {:noreply, state}
+    {:noreply, %{state | username: username}}
   end
 
   # One iteration of the polling loop. On success, poll again immediately
@@ -51,7 +69,7 @@ defmodule Dungeon.Telegram.Poller do
   def handle_info(:poll, state) do
     case Client.get_updates(state.token, state.offset, @long_poll_seconds) do
       {:ok, updates} ->
-        dispatch(state.token, updates)
+        dispatch(state, updates)
         send(self(), :poll)
         {:noreply, %{state | offset: next_offset(updates, state.offset)}}
 
@@ -74,11 +92,11 @@ defmodule Dungeon.Telegram.Poller do
   # Each chat's updates are handled by one task; up to 16 chats run at once.
   # Tasks are "nolink": a task that crashes or takes over 60 s is killed and
   # skipped without taking the poller down with it.
-  defp dispatch(token, updates) do
+  defp dispatch(state, updates) do
     Dungeon.TaskSupervisor
     |> Task.Supervisor.async_stream_nolink(
-      updates |> Enum.group_by(&get_in(&1, ["message", "chat", "id"])) |> Map.values(),
-      fn chat_updates -> Enum.each(chat_updates, &handle_update(token, &1)) end,
+      updates |> Enum.group_by(&chat_id/1) |> Map.values(),
+      fn chat_updates -> Enum.each(chat_updates, &handle_update(state, &1)) end,
       max_concurrency: 16,
       timeout: :timer.seconds(60),
       on_timeout: :kill_task
@@ -86,22 +104,33 @@ defmodule Dungeon.Telegram.Poller do
     |> Stream.run()
   end
 
-  # Handles one update and sends the reply, if there is one. A command that
-  # fails is logged and skipped, so the chat's later updates still run. That
-  # covers errors raised here, and a GameServer that crashed mid-command
-  # (e.g. because a database write failed), which arrives as an exit.
-  defp handle_update(token, update) do
-    with {chat_id, reply} <- Commands.handle(update),
-         {:error, reason} <- Client.send_message(token, chat_id, reply) do
-      Logger.warning("sendMessage to #{chat_id} failed: #{inspect(reason)}")
+  # Handles one update and sends the reply, if there is one.
+  defp handle_update(state, update) do
+    case Commands.handle(update, state.username) do
+      {chat_id, reply} -> reply(state.token, chat_id, reply)
+      nil -> :ok
     end
   rescue
-    e ->
-      Logger.error(
-        "Update #{update["update_id"]} failed: " <> Exception.format(:error, e, __STACKTRACE__)
-      )
+    e -> failed(state.token, update, Exception.format(:error, e, __STACKTRACE__))
   catch
-    :exit, reason ->
-      Logger.error("Update #{update["update_id"]} failed: #{Exception.format_exit(reason)}")
+    # A GameServer that crashed mid-command (e.g. because a database write
+    # failed) arrives here as an exit.
+    :exit, reason -> failed(state.token, update, Exception.format_exit(reason))
   end
+
+  # A command that failed: log it, and apologise to the chat so the player
+  # isn't left waiting. The chat's later updates still run.
+  defp failed(token, update, details) do
+    Logger.error("Update #{update["update_id"]} failed: #{details}")
+    if chat = chat_id(update), do: reply(token, chat, @apology)
+  end
+
+  defp reply(token, chat_id, text) do
+    with {:error, reason} <- Client.send_message(token, chat_id, text) do
+      Logger.warning("sendMessage to #{chat_id} failed: #{inspect(reason)}")
+    end
+  end
+
+  # The chat an update came from, or nil for updates that aren't messages.
+  defp chat_id(update), do: get_in(update, ["message", "chat", "id"])
 end

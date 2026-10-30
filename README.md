@@ -14,6 +14,7 @@ Add the bot to a group (or DM it) and send `/join`.
 Commands are case-insensitive and the slash is optional: `/look`, `Look` and `look!` all work.
 Without a slash, a message only counts if it is exactly a command (`look`, `go north`,
 `use potion`), so ordinary chat like "look at this" is ignored. `/newgame` always needs its slash.
+In groups with several bots, commands addressed to another bot (`/look@OtherBot`) are ignored.
 
 | Command | What it does |
 |---|---|

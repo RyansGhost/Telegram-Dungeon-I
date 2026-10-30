@@ -73,6 +73,8 @@ defmodule Dungeon.StoreTest do
       &Engine.attack(&1, 1),
       fn d -> {:ok, put_in(d.rooms[stairs_id].items, ["potion"]), ""} end,
       &Engine.take(&1, 1),
+      # Wound alice so the potion has something to heal.
+      fn d -> {:ok, put_in(d.players[1].hp, 5), ""} end,
       &Engine.use_item(&1, 1, "potion"),
       &Engine.descend(&1, 1),
       &Engine.leave(&1, 2)
@@ -115,6 +117,16 @@ defmodule Dungeon.StoreTest do
     assert updated.gold == 99
     assert updated.inserted_at == inserted.inserted_at
     assert DateTime.compare(updated.updated_at, inserted.updated_at) == :gt
+  end
+
+  test "saving an unchanged state writes nothing" do
+    id = chat_id()
+    d = busy_dungeon(id)
+    Store.save(d)
+    before = Repo.get_by!(PlayerRow, chat_id: id, user_id: 1)
+
+    Store.save(d, d)
+    assert Repo.get_by!(PlayerRow, chat_id: id, user_id: 1).updated_at == before.updated_at
   end
 
   test "chats are stored independently" do

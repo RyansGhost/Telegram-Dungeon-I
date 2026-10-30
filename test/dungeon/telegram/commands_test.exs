@@ -20,6 +20,13 @@ defmodule Dungeon.Telegram.CommandsTest do
   end
 
   # Like send_text/3, but asserts there was a reply to this chat and returns it.
+  # Same as send_text/3, as the bot @DungeonBot.
+  defp send_as_bot(text, chat), do: Commands.handle(update(text, chat), "DungeonBot")
+
+  defp update(text, chat, from \\ %{"id" => 1, "username" => "alice"}) do
+    %{"update_id" => 1, "message" => %{"text" => text, "chat" => %{"id" => chat}, "from" => from}}
+  end
+
   defp reply(text, chat, from \\ %{"id" => 1, "username" => "alice"}) do
     {^chat, reply} = send_text(text, chat, from)
     reply
@@ -45,6 +52,24 @@ defmodule Dungeon.Telegram.CommandsTest do
       start = Store.load(chat).start_room
       [{dir, _} | _] = Map.to_list(Store.load(chat).rooms[start].exits)
       assert reply("/GO #{String.upcase(dir)}", chat) =~ "heads #{dir}"
+    end
+
+    test "ignores commands addressed to another bot", %{chat: chat} do
+      assert {^chat, _} = send_as_bot("/join@DungeonBot", chat)
+      assert {^chat, _} = send_as_bot("/look@dungeonbot", chat)
+      assert {^chat, _} = send_as_bot("/look", chat)
+      assert send_as_bot("/look@OtherBot", chat) == nil
+      assert send_as_bot("look@OtherBot", chat) == nil
+    end
+
+    test "accepts any mention when the bot's own name is unknown", %{chat: chat} do
+      assert {^chat, _} = send_text("/help@WhoeverBot", chat)
+    end
+
+    test "picks up a player's new Telegram name at their next command", %{chat: chat} do
+      reply("/join", chat, %{"id" => 1, "username" => "alice"})
+      assert reply("/status", chat, %{"id" => 1, "username" => "alicia"}) =~ "alicia — level 1"
+      assert Store.load(chat).players[1].name == "alicia"
     end
 
     test "falls back from username to first name to id", %{chat: chat} do

@@ -56,11 +56,14 @@ defmodule Dungeon.GameServer do
   # Returns the chat's server, starting it first if needed. Starting is
   # always attempted, and the registry turns a duplicate into
   # :already_started, so two simultaneous first commands can't create two
-  # servers.
+  # servers. If the server can't start (init/1 failed to load the chat, say
+  # because the database is down), the caller exits with the reason, as if
+  # the server had crashed mid-call.
   defp ensure_started(chat_id) do
     case DynamicSupervisor.start_child(Dungeon.GameSupervisor, {__MODULE__, chat_id}) do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
+      {:error, reason} -> exit({:game_server_start_failed, chat_id, reason})
     end
   end
 

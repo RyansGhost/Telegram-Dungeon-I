@@ -13,6 +13,22 @@ defmodule Dungeon.WorldTest do
   # A spread of seeds and depths to check structural invariants against.
   @floors for seed <- [1, 7, 42, 1234, 99_999], depth <- 1..5, do: {seed, depth}
 
+  describe "directions" do
+    test "are the four compass points, each with an opposite" do
+      assert World.directions() == ~w(north south east west)
+      for dir <- World.directions(), do: assert(World.opposite(World.opposite(dir)) == dir)
+      assert World.opposite("north") == "south"
+    end
+
+    test "parse_direction/1 accepts names and shorthands in any case" do
+      for typed <- ["n", "N", "north", "North", "NORTH"],
+          do: assert(World.parse_direction(typed) == "north")
+
+      assert World.parse_direction("w") == "west"
+      for typed <- ["", "up", "no", "x"], do: assert(World.parse_direction(typed) == nil)
+    end
+  end
+
   test "the same seed and depth always produce the same floor" do
     for {seed, depth} <- @floors do
       assert World.generate(seed, depth) == World.generate(seed, depth)
@@ -32,6 +48,13 @@ defmodule Dungeon.WorldTest do
 
     {rooms, _} = World.generate(1, 1, 3)
     assert map_size(rooms) == 3
+  end
+
+  test "the smallest floor is an entrance and a stairwell" do
+    {rooms, start} = World.generate(1, 1, 2)
+    assert [stairs] = rooms |> Map.delete(start) |> Map.values()
+    assert stairs.stairs? and stairs.monster
+    assert_raise ArgumentError, fn -> World.generate(1, 1, 1) end
   end
 
   test "room ids match their keys and grid coordinates" do

@@ -9,6 +9,10 @@ defmodule Dungeon.Engine do
   Actions take the acting player's Telegram `user_id`. Unless noted, the
   player must have joined and must not be down (at 0 HP).
 
+  The rules are built from small helpers at the bottom of the module:
+  `roll/1` for dice, `damage/2` and `heal/2` for HP changes that stay within
+  0..max_hp, `xp_needed/1` for levelling, and `hp_text/1` for display.
+
   Combat and fleeing use the process's global `:rand` state, so outcomes
   vary from call to call; seed it with `:rand.seed/2` for repeatable
   results, as the tests do.
@@ -16,8 +20,10 @@ defmodule Dungeon.Engine do
 
   alias Dungeon.{Player, State, World}
 
-  # Single-letter shorthands accepted by move/3.
-  @aliases %{"n" => "north", "s" => "south", "e" => "east", "w" => "west"}
+  # Chance that a monster lands a parting blow on someone leaving its room.
+  @flee_hit_chance 0.3
+  # HP restored by a potion.
+  @potion_heal 10
 
   @doc """
   Creates a fresh dungeon for `chat_id` at depth 1, with no players.
@@ -29,6 +35,18 @@ defmodule Dungeon.Engine do
     seed = seed || :rand.uniform(2_000_000_000)
     {rooms, start} = World.generate(seed, 1)
     %State{chat_id: chat_id, seed: seed, rooms: rooms, start_room: start}
+  end
+
+  @doc """
+  Updates a player's display name if it has changed (e.g. they changed their
+  Telegram username), so `/party` and `/revive` use their current name.
+  Returns the state unchanged if they haven't joined or the name is the same.
+  """
+  def refresh_name(%State{} = d, user_id, name) do
+    case d.players do
+      %{^user_id => %Player{name: old} = p} when old != name -> put_player(d, %{p | name: name})
+      _ -> d
+    end
   end
 
   @doc "Adds a new level 1 player called `name` at the entrance."
@@ -66,39 +84,41 @@ defmodule Dungeon.Engine do
   stand and don't move.
   """
   def move(d, user_id, direction) do
-    dir = String.downcase(direction)
-    dir = Map.get(@aliases, dir, dir)
+    with {:ok, p} <- player(d, user_id),
+         room = room_of(d, p),
+         {:ok, dir, dest} <- exit_towards(room, direction) do
+      {p, prefix} = flee(p, room)
 
-    with {:ok, p} <- player(d, user_id) do
-      room = d.rooms[p.room_id]
-
-      case Map.fetch(room.exits, dir) do
-        :error ->
-          {:error,
-           "You can't go #{if dir == "", do: "nowhere", else: dir}. Exits: #{exits(room)}"}
-
-        {:ok, dest} ->
-          {p, prefix} = flee(p, room)
-
-          if Player.down?(p) do
-            {:ok, put_player(d, p), prefix}
-          else
-            d = put_player(d, %{p | room_id: dest})
-            {:ok, d, prefix <> "#{p.name} heads #{dir}.\n\n" <> describe(d, user_id)}
-          end
+      if Player.down?(p) do
+        {:ok, put_player(d, p), prefix}
+      else
+        d = put_player(d, %{p | room_id: dest})
+        {:ok, d, prefix <> "#{p.name} heads #{dir}.\n\n" <> describe(d, user_id)}
       end
     end
   end
 
-  # Leaving a room with a living monster: 30% chance it hits the player for
+  # Resolves what the player typed to one of the room's exits. Returns
+  # {:ok, direction, destination_room_id} or an error listing the exits.
+  defp exit_towards(room, typed) do
+    dir = World.parse_direction(typed)
+
+    case room.exits do
+      %{^dir => dest} -> {:ok, dir, dest}
+      _ when typed == "" -> {:error, "Go where? Exits: #{exits(room)}"}
+      _ -> {:error, "You can't go #{dir || String.downcase(typed)}. Exits: #{exits(room)}"}
+    end
+  end
+
+  # Leaving a room with a living monster: a chance it hits the player for
   # 1..attack damage. Returns the updated player and text to put before the
   # move message (empty if nothing happened).
   defp flee(p, %{monster: nil}), do: {p, ""}
 
   defp flee(p, %{monster: m}) do
-    if :rand.uniform() < 0.3 do
-      dmg = :rand.uniform(m.attack)
-      p = %{p | hp: max(0, p.hp - dmg)}
+    if :rand.uniform() < @flee_hit_chance do
+      dmg = roll(m.attack)
+      p = damage(p, dmg)
 
       if Player.down?(p),
         do: {p, "💀 The #{m.name} strikes #{p.name} for #{dmg} as they flee — they collapse!"},
@@ -121,9 +141,9 @@ defmodule Dungeon.Engine do
   """
   def attack(d, user_id) do
     with {:ok, p} <- player(d, user_id),
-         room = d.rooms[p.room_id],
+         room = room_of(d, p),
          {:ok, m} <- monster_in(room) do
-      dmg = :rand.uniform(p.attack) + p.level
+      dmg = roll(p.attack) + p.level
       m = %{m | hp: m.hp - dmg}
       hit = "🗡️ #{p.name} hits the #{m.name} for #{dmg}."
       # Everyone standing in the room shares the fight: the attacker first,
@@ -131,67 +151,68 @@ defmodule Dungeon.Engine do
       party = [p | Enum.reject(others_here(d, p), &Player.down?/1)]
 
       if m.hp <= 0 do
-        # Monster slain: clear the room and pay out shares.
-        n = length(party)
-        xp = max(1, div(m.xp, n))
-        gold = div(m.gold, n)
-
-        {d, level_lines} =
-          Enum.reduce(party, {put_room(d, %{room | monster: nil}), []}, fn member, {d, acc} ->
-            {member, lines} = gain_xp(%{member | gold: member.gold + gold}, xp)
-            {put_player(d, member), acc ++ lines}
-          end)
-
-        slain =
-          "☠️ The #{m.name} is slain! Each of #{n} adventurer(s) gains #{xp} XP and #{gold} gold."
-
-        {:ok, d, Enum.join([hit, slain | level_lines], "\n")}
+        {d, lines} = share_rewards(put_room(d, %{room | monster: nil}), party, m)
+        {:ok, d, Enum.join([hit | lines], "\n")}
       else
-        # Monster survives: save its new HP and let it hit back.
-        target = Enum.random(party)
-        blow = :rand.uniform(m.attack)
-        target = %{target | hp: max(0, target.hp - blow)}
-        d = d |> put_room(%{room | monster: m}) |> put_player(target)
-
-        lines = [
-          hit,
-          "The #{m.name} [#{m.hp}/#{m.max_hp}] strikes #{target.name} for #{blow}. " <>
-            "(#{target.hp}/#{target.max_hp} HP)"
-        ]
-
-        lines =
-          if Player.down?(target),
-            do: lines ++ ["💀 #{target.name} collapses! Someone must /revive them."],
-            else: lines
-
-        {:ok, d, Enum.join(lines, "\n")}
+        {d, lines} = counterattack(put_room(d, %{room | monster: m}), party, m)
+        {:ok, d, Enum.join([hit | lines], "\n")}
       end
     end
+  end
+
+  # A slain monster's XP and gold, split evenly among `party`. Returns the
+  # state and the announcement lines (the kill, then any level-ups).
+  defp share_rewards(d, party, m) do
+    n = length(party)
+    xp = max(1, div(m.xp, n))
+    gold = div(m.gold, n)
+
+    {d, level_lines} =
+      Enum.reduce(party, {d, []}, fn member, {d, acc} ->
+        {member, lines} = gain_xp(%{member | gold: member.gold + gold}, xp)
+        {put_player(d, member), acc ++ lines}
+      end)
+
+    slain =
+      "☠️ The #{m.name} is slain! Each of #{n} adventurer(s) gains #{xp} XP and #{gold} gold."
+
+    {d, [slain | level_lines]}
+  end
+
+  # A surviving monster hits one random member of `party`. Returns the state
+  # and the lines describing the blow.
+  defp counterattack(d, party, m) do
+    blow = roll(m.attack)
+    target = party |> Enum.random() |> damage(blow)
+
+    lines = [
+      "The #{m.name} [#{m.hp}/#{m.max_hp}] strikes #{target.name} for #{blow}. " <>
+        "(#{hp_text(target)})"
+    ]
+
+    lines =
+      if Player.down?(target),
+        do: lines ++ ["💀 #{target.name} collapses! Someone must /revive them."],
+        else: lines
+
+    {put_player(d, target), lines}
   end
 
   # Adds XP, then applies as many level-ups as it pays for. Returns the
   # player and one announcement line per level gained.
   defp gain_xp(p, xp), do: level_up(%{p | xp: p.xp + xp}, [])
 
-  # Reaching the next level costs `level * 20` XP (20 to reach level 2, 40 to
-  # reach 3, ...). Leftover XP carries over. Each level adds 5 max HP and 1
-  # attack, and heals the player fully.
-  defp level_up(%Player{xp: xp, level: level} = p, acc) when xp >= level * 20 do
-    max_hp = p.max_hp + 5
-
-    p = %{
-      p
-      | xp: xp - level * 20,
-        level: level + 1,
-        max_hp: max_hp,
-        hp: max_hp,
-        attack: p.attack + 1
-    }
-
-    level_up(p, acc ++ ["🌟 #{p.name} reaches level #{p.level}!"])
+  # Leftover XP carries over. Each level adds 5 max HP and 1 attack, and
+  # heals the player fully.
+  defp level_up(%Player{xp: xp, level: level} = p, acc) do
+    if xp >= xp_needed(level) do
+      p = %{p | xp: xp - xp_needed(level), level: level + 1, max_hp: p.max_hp + 5}
+      p = %{p | hp: p.max_hp, attack: p.attack + 1}
+      level_up(p, acc ++ ["🌟 #{p.name} reaches level #{p.level}!"])
+    else
+      {p, acc}
+    end
   end
-
-  defp level_up(p, acc), do: {p, acc}
 
   @doc """
   Picks up all loot in the player's room. Not allowed while a monster is
@@ -199,7 +220,7 @@ defmodule Dungeon.Engine do
   """
   def take(d, user_id) do
     with {:ok, p} <- player(d, user_id) do
-      room = d.rooms[p.room_id]
+      room = room_of(d, p)
 
       cond do
         room.items == [] ->
@@ -223,7 +244,8 @@ defmodule Dungeon.Engine do
   Uses one copy of `item` from the player's inventory (name is trimmed and
   case-insensitive):
 
-    * `potion` - heals up to 10 HP, never above max
+    * `potion` - heals up to 10 HP, never above max (refused at full HP, so
+      it isn't wasted)
     * `elixir` - +3 max HP, then heals fully
     * `whetstone` - +1 attack, permanently
 
@@ -247,14 +269,19 @@ defmodule Dungeon.Engine do
 
   # Each item's effect. These return the updated player; use_item/3 removes
   # the item from the inventory only once its effect has applied.
+  defp apply_item(%Player{hp: hp, max_hp: hp}, "potion"),
+    do: {:error, "You're already at full health. Save the potion for later."}
+
   defp apply_item(p, "potion") do
-    healed = min(10, p.max_hp - p.hp)
-    p = %{p | hp: p.hp + healed}
-    {:ok, p, "🧪 #{p.name} drinks a potion and recovers #{healed} HP (#{p.hp}/#{p.max_hp})."}
+    healed = heal(p, @potion_heal)
+
+    {:ok, healed,
+     "🧪 #{p.name} drinks a potion and recovers #{healed.hp - p.hp} HP (#{hp_text(healed)})."}
   end
 
   defp apply_item(p, "elixir") do
-    p = %{p | max_hp: p.max_hp + 3, hp: p.max_hp + 3}
+    p = %{p | max_hp: p.max_hp + 3}
+    p = heal(p, p.max_hp)
     {:ok, p, "⚗️ #{p.name} drinks an elixir: fully healed, max HP now #{p.max_hp}."}
   end
 
@@ -286,8 +313,8 @@ defmodule Dungeon.Engine do
           {:error, "There's no fallen adventurer by that name here."}
 
         o ->
-          o = %{o | hp: div(o.max_hp, 2)}
-          {:ok, put_player(d, o), "✨ #{p.name} revives #{o.name} (#{o.hp}/#{o.max_hp} HP)."}
+          o = heal(o, div(o.max_hp, 2))
+          {:ok, put_player(d, o), "✨ #{p.name} revives #{o.name} (#{hp_text(o)})."}
       end
     end
   end
@@ -296,7 +323,7 @@ defmodule Dungeon.Engine do
   def rest(d, user_id) do
     with {:ok, p} <- player(d, user_id) do
       if p.room_id == d.start_room do
-        {:ok, put_player(d, %{p | hp: p.max_hp}),
+        {:ok, put_player(d, heal(p, p.max_hp)),
          "🔥 #{p.name} rests by the torches and is fully healed."}
       else
         {:error, "You can only rest safely at the entrance."}
@@ -314,7 +341,7 @@ defmodule Dungeon.Engine do
   """
   def descend(d, user_id) do
     with {:ok, p} <- player(d, user_id) do
-      room = d.rooms[p.room_id]
+      room = room_of(d, p)
 
       cond do
         not room.stairs? ->
@@ -347,7 +374,7 @@ defmodule Dungeon.Engine do
       pack = if p.inventory == [], do: "empty", else: Enum.join(p.inventory, ", ")
 
       {:ok, d,
-       "🧙 #{p.name} — level #{p.level} (#{p.xp}/#{p.level * 20} XP)\n" <>
+       "🧙 #{p.name} — level #{p.level} (#{p.xp}/#{xp_needed(p.level)} XP)\n" <>
          "HP #{p.hp}/#{p.max_hp} · Attack #{p.attack} · Gold #{p.gold}\n" <>
          "Pack: #{pack}"}
     end
@@ -366,21 +393,41 @@ defmodule Dungeon.Engine do
       |> Map.values()
       |> Enum.sort_by(&{-&1.level, &1.name})
       |> Enum.map(fn p ->
-        state = if Player.down?(p), do: "💀 down", else: "#{p.hp}/#{p.max_hp} HP"
-        "• #{p.name} (lvl #{p.level}, #{state}) in #{d.rooms[p.room_id].name}"
+        state = if Player.down?(p), do: "💀 down", else: hp_text(p)
+        "• #{p.name} (lvl #{p.level}, #{state}) in #{room_of(d, p).name}"
       end)
 
     {:ok, d, Enum.join(["🏰 Depth #{d.depth} — party of #{map_size(d.players)}" | lines], "\n")}
   end
 
-  ## Helpers
+  ## Rules helpers: the small building blocks the actions above are made of.
+
+  # A die roll: a random integer from 1 to `sides`.
+  defp roll(sides), do: :rand.uniform(sides)
+
+  # Takes `amount` HP from a player, stopping at 0 (down).
+  defp damage(p, amount), do: %{p | hp: max(0, p.hp - amount)}
+
+  # Gives a player `amount` HP, stopping at their max.
+  defp heal(p, amount), do: %{p | hp: min(p.max_hp, p.hp + amount)}
+
+  # XP needed to advance from `level` to the next: 20 for level 2, 40 for 3...
+  defp xp_needed(level), do: level * 20
+
+  ## Lookups and display helpers
+
+  # The room the player is standing in.
+  defp room_of(d, p), do: Map.fetch!(d.rooms, p.room_id)
+
+  # HP for display, e.g. "12/20 HP".
+  defp hp_text(p), do: "#{p.hp}/#{p.max_hp} HP"
 
   # The room description shown by /look and after moving. Optional lines
   # evaluate to `false` or `nil` when they don't apply, and are filtered out
   # before joining.
   defp describe(d, user_id) do
     p = d.players[user_id]
-    room = d.rooms[p.room_id]
+    room = room_of(d, p)
     others = others_here(d, p)
 
     [

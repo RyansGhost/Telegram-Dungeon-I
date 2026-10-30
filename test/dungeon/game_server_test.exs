@@ -74,6 +74,14 @@ defmodule Dungeon.GameServerTest do
     assert GameServer.run(chat, &Engine.party/1) =~ "alice"
   end
 
+  @tag :capture_log
+  test "a chat that can't be loaded exits the caller with the reason" do
+    # A chat id the database can't hold makes init/1 fail, as it would if
+    # the database were down.
+    assert {:game_server_start_failed, "not-a-chat", _} =
+             catch_exit(GameServer.run("not-a-chat", &Engine.party/1))
+  end
+
   test "reset replaces the dungeon", %{chat: chat} do
     GameServer.run(chat, &Engine.join(&1, 1, "alice"))
     assert GameServer.reset(chat) =~ "new dungeon"

@@ -26,8 +26,11 @@ defmodule Dungeon.World do
   alias Dungeon.{Monster, Room}
 
   # Directions and the grid offset each one moves by: north is +y, east is +x.
+  # This is the single list of directions the whole game uses.
   @steps [{"north", {0, 1}}, {"south", {0, -1}}, {"east", {1, 0}}, {"west", {-1, 0}}]
   @opposite %{"north" => "south", "south" => "north", "east" => "west", "west" => "east"}
+  # One-letter shorthands, derived from the names: "n" => "north", ...
+  @shorthands Map.new(@steps, fn {dir, _} -> {String.first(dir), dir} end)
 
   # Cosmetic text, picked at random for each room.
   @room_names [
@@ -69,15 +72,35 @@ defmodule Dungeon.World do
   # Loot table. Repeats act as weights: potions are three times as common.
   @items ~w(potion potion potion whetstone elixir)
 
+  @doc "The four directions, as used in room exits."
+  def directions, do: Enum.map(@steps, &elem(&1, 0))
+
+  @doc "The direction leading back the way `direction` came."
+  def opposite(direction), do: Map.fetch!(@opposite, direction)
+
+  @doc """
+  Resolves what a player typed to a direction, or `nil` if it isn't one.
+  Accepts full names and one-letter shorthands, in any case:
+  `"N"`, `"north"` and `"North"` all give `"north"`.
+  """
+  def parse_direction(text) when is_binary(text) do
+    text = String.downcase(text)
+    if text in directions(), do: text, else: Map.get(@shorthands, text)
+  end
+
   @doc """
   Generates the floor at `depth` for a dungeon's `seed`.
 
   Floors grow by two rooms per depth (10 rooms at depth 1); pass `size` to
-  override that. Returns `{rooms, start_room_id}`, where `rooms` maps room id
-  to `Dungeon.Room`.
+  override that (at least 2: an entrance and a stairwell). Returns
+  `{rooms, start_room_id}`, where `rooms` maps room id to `Dungeon.Room`.
   """
   def generate(seed, depth, size \\ nil) do
     size = size || 8 + 2 * depth
+
+    if size < 2,
+      do: raise(ArgumentError, "a floor needs at least 2 rooms (an entrance and stairs)")
+
     # Seed a private generator from {seed, depth}. The constant third element
     # is arbitrary; :exsss just needs three integers.
     rng = :rand.seed_s(:exsss, {seed, depth, 7919})
@@ -204,7 +227,7 @@ defmodule Dungeon.World do
 
     rooms
     |> update_in([key(a), Access.key!(:exits)], &Map.put(&1, dir, key(b)))
-    |> update_in([key(b), Access.key!(:exits)], &Map.put(&1, @opposite[dir], key(a)))
+    |> update_in([key(b), Access.key!(:exits)], &Map.put(&1, opposite(dir), key(a)))
   end
 
   # Room id for a grid position, e.g. {-1, 2} -> "-1,2".
