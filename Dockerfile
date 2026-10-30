@@ -13,6 +13,12 @@ FROM elixir:1.17-otp-27-slim AS build
 ENV MIX_ENV=prod
 WORKDIR /app
 
+# The slim image has no CA certificates, which Mix needs to verify the
+# HTTPS downloads of Hex and the dependencies.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN mix local.hex --force && mix local.rebar --force
 
 # Fetch and compile dependencies before copying the app's own code, so this
