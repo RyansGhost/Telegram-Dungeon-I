@@ -6,6 +6,11 @@ defmodule Dungeon.GameServer do
   message at a time), so simultaneous players can't clobber each other's
   moves. Every change is saved to `Dungeon.Store` before the reply goes out.
 
+  If a save fails (say, the database is down), the server crashes instead of
+  replying, and its unsaved state is thrown away. The next command starts a
+  fresh server from what the database holds, so memory and database never
+  disagree.
+
   Servers start on a chat's first command, and stop after 30 minutes without
   one to free memory. The next command starts a new server, which reloads
   the state from the store.
@@ -59,25 +64,35 @@ defmodule Dungeon.GameServer do
     end
   end
 
-  # Resume the saved dungeon, or create one for a chat that's never played.
+  # The server's state is %{dungeon: current state, saved: state as last
+  # saved}. `saved` lets Store.save/2 write only what changed; it's nil for a
+  # chat that has never been saved (a new dungeon is only written once
+  # something happens in it).
+  #
   # Returning a timeout from a callback makes OTP send :timeout (see
   # handle_info/2) if no other message arrives within that time.
   @impl true
   def init(chat_id) do
-    {:ok, Store.load(chat_id) || Engine.new(chat_id), @idle_timeout}
+    state =
+      case Store.load(chat_id) do
+        nil -> %{dungeon: Engine.new(chat_id), saved: nil}
+        dungeon -> %{dungeon: dungeon, saved: dungeon}
+      end
+
+    {:ok, state, @idle_timeout}
   end
 
   @impl true
-  def handle_call({:run, fun}, _from, state) do
-    case fun.(state) do
+  def handle_call({:run, fun}, _from, %{dungeon: dungeon} = state) do
+    case fun.(dungeon) do
       # Read-only actions (look, status, ...) return the same state: skip
-      # the disk write.
-      {:ok, ^state, reply} ->
+      # the database write.
+      {:ok, ^dungeon, reply} ->
         {:reply, reply, state, @idle_timeout}
 
-      {:ok, new_state, reply} ->
-        Store.save(new_state)
-        {:reply, reply, new_state, @idle_timeout}
+      {:ok, new_dungeon, reply} ->
+        :ok = Store.save(new_dungeon, state.saved)
+        {:reply, reply, %{dungeon: new_dungeon, saved: new_dungeon}, @idle_timeout}
 
       {:error, reply} ->
         {:reply, reply, state, @idle_timeout}

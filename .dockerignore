@@ -1,9 +1,8 @@
-# Kept out of the Docker build context: build output, local saved games,
-# git history, and above all .env, so the bot token never ends up in an
-# image layer.
+# Kept out of the Docker build context: build output, git history, and
+# above all .env, so secrets never end up in an image layer.
 _build
 deps
-data
+cover
 tmp
 .git
 .env

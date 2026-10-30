@@ -1,4 +1,8 @@
 # Run with: docker compose up -d --build
+#
+# Two containers: the bot, and the PostgreSQL database that stores every
+# chat's dungeon and every player's progress. They talk over compose's
+# private network; the database isn't exposed outside it.
 services:
   dungeon:
     build: .
@@ -6,11 +10,37 @@ services:
     container_name: telegram-dungeon
     # Come back after crashes and host reboots, unless stopped by hand.
     restart: unless-stopped
-    # TELEGRAM_BOT_TOKEN and optional settings (see .env.example).
+    # TELEGRAM_BOT_TOKEN, POSTGRES_PASSWORD and optional settings
+    # (see .env.example).
     env_file: .env
+    environment:
+      # "db" is the database service's hostname on compose's network.
+      DATABASE_URL: postgres://dungeon:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/dungeon
+    # Wait until the database accepts connections before starting the bot.
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    # Pinned to a major version: upgrading PostgreSQL across major versions
+    # needs a dump and restore (see README.md).
+    image: postgres:17-alpine
+    container_name: telegram-dungeon-db
+    restart: unless-stopped
+    environment:
+      # Used to create the database and its owner on first start only.
+      POSTGRES_USER: dungeon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: dungeon
     volumes:
-      # Saved games. A named volume keeps them across rebuilds and upgrades.
-      - dungeon-data:/data
+      # The database files. A named volume keeps them across rebuilds,
+      # upgrades and `docker compose down` (but not `down -v`).
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dungeon -d dungeon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
-  dungeon-data:
+  db-data:

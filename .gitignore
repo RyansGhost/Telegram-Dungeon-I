@@ -3,12 +3,9 @@
 /deps/
 /cover/
 /doc/
+/tmp/
 erl_crash.dump
 *.ez
 
-# Test and local databases
-/tmp/
-/data/
-
-# Holds the bot token: never commit it.
+# Holds the bot token and database password: never commit it.
 .env

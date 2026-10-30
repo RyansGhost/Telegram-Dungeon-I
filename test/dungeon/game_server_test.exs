@@ -63,6 +63,17 @@ defmodule Dungeon.GameServerTest do
     refute server(chat) == pid
   end
 
+  test "a crashed server is replaced by one loaded from the database", %{chat: chat} do
+    GameServer.run(chat, &Engine.join(&1, 1, "alice"))
+    pid = server(chat)
+    ref = Process.monitor(pid)
+
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, _, _, :killed}
+
+    assert GameServer.run(chat, &Engine.party/1) =~ "alice"
+  end
+
   test "reset replaces the dungeon", %{chat: chat} do
     GameServer.run(chat, &Engine.join(&1, 1, "alice"))
     assert GameServer.reset(chat) =~ "new dungeon"

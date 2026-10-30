@@ -6,13 +6,16 @@ defmodule Dungeon.Application do
 
       Telegram.Poller ──> Telegram.Commands ──> GameServer (one per chat)
        (long-polls,        (parses the            (runs Engine rules,
-        replies)            command)               saves via Store)
+        replies)            command)               saves via Store ──> PostgreSQL)
 
   The children start in order, each relying on the ones before it:
 
+    * `Dungeon.Repo` - the pool of connections to PostgreSQL
+    * `Ecto.Migrator` - brings the database schema up to date (runs any
+      migrations in priv/repo/migrations not yet applied), then exits. Set
+      `SKIP_MIGRATIONS=true` to manage migrations by hand instead.
     * `Dungeon.Registry` - maps chat ids to their `Dungeon.GameServer`
       processes
-    * `Dungeon.Store` - opens the DETS file that saves every dungeon
     * `Dungeon.GameSupervisor` - starts a `Dungeon.GameServer` for each chat
       on demand
     * `Dungeon.TaskSupervisor` - runs the poller's per-chat worker tasks
@@ -28,8 +31,11 @@ defmodule Dungeon.Application do
 
     children =
       [
+        Dungeon.Repo,
+        {Ecto.Migrator,
+         repos: Application.fetch_env!(:dungeon, :ecto_repos),
+         skip: System.get_env("SKIP_MIGRATIONS") == "true"},
         {Registry, keys: :unique, name: Dungeon.Registry},
-        {Dungeon.Store, Application.fetch_env!(:dungeon, :db_path)},
         {DynamicSupervisor, name: Dungeon.GameSupervisor, strategy: :one_for_one},
         {Task.Supervisor, name: Dungeon.TaskSupervisor}
       ] ++ if(token, do: [{Dungeon.Telegram.Poller, token}], else: [])

@@ -1,7 +1,7 @@
 # The game's data model. These are plain structs with no behaviour beyond a
 # helper or two: all rules live in Dungeon.Engine, and generation in
-# Dungeon.World. Everything here is a plain term, so a whole dungeon can be
-# stored in DETS as-is (see Dungeon.Store).
+# Dungeon.World. Dungeon.Store maps them to PostgreSQL tables (State to
+# `dungeons`, Player to `players`, Room to `rooms`, Monster to a JSONB column).
 
 defmodule Dungeon.Monster do
   @moduledoc """

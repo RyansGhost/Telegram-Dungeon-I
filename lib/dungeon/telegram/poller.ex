@@ -87,7 +87,9 @@ defmodule Dungeon.Telegram.Poller do
   end
 
   # Handles one update and sends the reply, if there is one. A command that
-  # raises is logged and skipped, so the chat's later updates still run.
+  # fails is logged and skipped, so the chat's later updates still run. That
+  # covers errors raised here, and a GameServer that crashed mid-command
+  # (e.g. because a database write failed), which arrives as an exit.
   defp handle_update(token, update) do
     with {chat_id, reply} <- Commands.handle(update),
          {:error, reason} <- Client.send_message(token, chat_id, reply) do
@@ -98,5 +100,8 @@ defmodule Dungeon.Telegram.Poller do
       Logger.error(
         "Update #{update["update_id"]} failed: " <> Exception.format(:error, e, __STACKTRACE__)
       )
+  catch
+    :exit, reason ->
+      Logger.error("Update #{update["update_id"]} failed: #{Exception.format_exit(reason)}")
   end
 end

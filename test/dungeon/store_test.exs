@@ -1,31 +1,120 @@
-# Saving and loading dungeons. These use the application's real Store (on
-# the test database configured in config.exs), with a unique chat id per
-# test so they don't see each other's data.
+# Saving and loading dungeons in PostgreSQL, through the application's real
+# Repo (the test database configured in config.exs). Each test uses its own
+# chat id, so tests don't see each other's data and can run concurrently.
 defmodule Dungeon.StoreTest do
-  # Not async: one test restarts the store, which every other test relies on.
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
-  alias Dungeon.{Engine, Store}
+  import Dungeon.Fixtures, only: [monster: 1]
+  import Ecto.Query
+
+  alias Dungeon.{Engine, Repo, Store}
+  alias Dungeon.Store.{PlayerRow, RoomRow}
 
   defp chat_id, do: System.unique_integer()
+
+  defp count(schema, chat_id),
+    do: Repo.aggregate(from(r in schema, where: r.chat_id == ^chat_id), :count)
+
+  # A dungeon with something in every column: players with progress and
+  # inventories, a wounded monster, loot, and the stairwell.
+  defp busy_dungeon(id) do
+    {:ok, d, _} = Engine.join(Engine.new(id, 5), 1, "alice")
+    {:ok, d, _} = Engine.join(d, 2, "bob")
+    d = put_in(d.players[1], %{d.players[1] | hp: 7, level: 3, xp: 12, gold: 40})
+    d = put_in(d.players[2].inventory, ["potion", "potion", "whetstone"])
+    d = put_in(d.rooms[d.start_room].items, ["elixir"])
+    put_in(d.rooms[d.start_room].monster, monster(name: "Ogre", hp: 3, max_hp: 9))
+  end
 
   test "returns nil for an unknown chat" do
     assert Store.load(chat_id()) == nil
   end
 
-  test "round-trips a dungeon" do
+  test "round-trips a dungeon exactly" do
     id = chat_id()
-    {:ok, d, _} = Engine.join(Engine.new(id, 5), 1, "alice")
+    d = busy_dungeon(id)
     Store.save(d)
     assert Store.load(id) == d
   end
 
-  test "saving again overwrites" do
+  test "stores one row per player and per room" do
     id = chat_id()
-    d = Engine.new(id, 5)
+    d = busy_dungeon(id)
     Store.save(d)
-    Store.save(%{d | depth: 4})
-    assert Store.load(id).depth == 4
+    assert count(PlayerRow, id) == 2
+    assert count(RoomRow, id) == map_size(d.rooms)
+  end
+
+  test "handles Telegram's large supergroup ids" do
+    id = -1_001_234_567_890 - System.unique_integer([:positive])
+    {:ok, d, _} = Engine.join(Engine.new(id, 1), 9_876_543_210, "carol")
+    Store.save(d)
+    assert Store.load(id) == d
+  end
+
+  test "incremental saves stay exact through a whole game" do
+    # Play a scripted game, saving each step against the previous state the
+    # way GameServer does, and check the database matches after every step.
+    id = chat_id()
+    :rand.seed(:exsss, {4, 5, 6})
+    d0 = Engine.new(id, 77)
+    {stairs_id, _} = Enum.find(d0.rooms, fn {_, r} -> r.stairs? end)
+    [{dir, _} | _] = Map.to_list(d0.rooms[d0.start_room].exits)
+
+    steps = [
+      &Engine.join(&1, 1, "alice"),
+      &Engine.join(&1, 2, "bob"),
+      &Engine.move(&1, 1, dir),
+      # Put alice on the stairs with the guardian nearly dead, then fight.
+      fn d ->
+        d = put_in(d.players[1].room_id, stairs_id)
+        {:ok, put_in(d.rooms[stairs_id].monster.hp, 1), ""}
+      end,
+      &Engine.attack(&1, 1),
+      fn d -> {:ok, put_in(d.rooms[stairs_id].items, ["potion"]), ""} end,
+      &Engine.take(&1, 1),
+      &Engine.use_item(&1, 1, "potion"),
+      &Engine.descend(&1, 1),
+      &Engine.leave(&1, 2)
+    ]
+
+    Enum.reduce(steps, {d0, nil}, fn step, {d, saved} ->
+      {:ok, d, _} = step.(d)
+      Store.save(d, saved)
+      assert Store.load(id) == d
+      {d, d}
+    end)
+
+    # After descending, only the new floor's rooms remain, and bob is gone.
+    final = Store.load(id)
+    assert final.depth == 2
+    assert count(RoomRow, id) == map_size(final.rooms)
+    assert count(PlayerRow, id) == 1
+  end
+
+  test "a reset replaces everything" do
+    id = chat_id()
+    d = busy_dungeon(id)
+    Store.save(d)
+
+    fresh = Engine.new(id, 6)
+    Store.save(fresh, d)
+    assert Store.load(id) == fresh
+    assert count(PlayerRow, id) == 0
+  end
+
+  test "updates keep the original inserted_at" do
+    id = chat_id()
+    d = busy_dungeon(id)
+    Store.save(d)
+    inserted = Repo.get_by!(PlayerRow, chat_id: id, user_id: 1)
+
+    Store.save(put_in(d.players[1].gold, 99), d)
+    updated = Repo.get_by!(PlayerRow, chat_id: id, user_id: 1)
+
+    assert updated.gold == 99
+    assert updated.inserted_at == inserted.inserted_at
+    assert DateTime.compare(updated.updated_at, inserted.updated_at) == :gt
   end
 
   test "chats are stored independently" do
@@ -36,29 +125,18 @@ defmodule Dungeon.StoreTest do
     assert Store.load(b).seed == 2
   end
 
-  test "state survives the store restarting" do
+  test "a failed save writes nothing" do
     id = chat_id()
-    Store.save(Engine.new(id, 77))
+    {:ok, d, _} = Engine.join(Engine.new(id, 3), 1, "alice")
+    Store.save(d)
 
-    # Kill the store outright (no clean shutdown) and wait for the
-    # supervisor to start a replacement.
-    pid = Process.whereis(Store)
-    ref = Process.monitor(pid)
-    Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, _, _, _}
+    # Change alice's gold, and give a room a NULL name, which the schema
+    # rejects. Players are written before rooms, so the gold change succeeds
+    # first and must then be rolled back with the rest of the transaction.
+    broken = put_in(d.players[1].gold, 50)
+    broken = put_in(broken.rooms[d.start_room].name, nil)
 
-    wait_for(fn -> Process.whereis(Store) not in [nil, pid] end)
-    # The name is registered before init/1 reopens the file; wait for init.
-    :sys.get_state(Store)
-    assert Store.load(id).seed == 77
-  end
-
-  # Polls `fun` every 20 ms, for up to a second, until it returns true.
-  defp wait_for(fun, tries \\ 50) do
-    cond do
-      fun.() -> :ok
-      tries == 0 -> flunk("condition never became true")
-      true -> Process.sleep(20) && wait_for(fun, tries - 1)
-    end
+    assert_raise Postgrex.Error, fn -> Store.save(broken, d) end
+    assert Store.load(id) == d
   end
 end

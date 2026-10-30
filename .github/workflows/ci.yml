@@ -27,6 +27,21 @@ jobs:
             otp: "27"
           - elixir: "1.18"
             otp: "27"
+    # A throwaway PostgreSQL for the tests, matching the version in
+    # compose.yaml. Its default postgres/postgres login is what config.exs
+    # expects for the test database.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       MIX_ENV: test
     steps:
@@ -37,12 +52,17 @@ jobs:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      # Reuse compiled files from earlier runs to speed up compilation.
+      # Reuse downloaded and compiled dependencies from earlier runs.
       - uses: actions/cache@v4
         with:
-          path: _build
-          key: build-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.exs') }}
+          path: |
+            deps
+            _build
+          key: build-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
           restore-keys: build-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Fetch dependencies
+        run: mix deps.get
 
       # Fails if any file differs from `mix format` output.
       - name: Check formatting
@@ -51,7 +71,8 @@ jobs:
       - name: Compile
         run: mix compile --warnings-as-errors
 
-      # Also enforces the coverage threshold set in mix.exs.
+      # Creates and migrates the test database first (see the alias in
+      # mix.exs). Also enforces the coverage threshold set in mix.exs.
       - name: Test with coverage
         run: mix test --cover --warnings-as-errors
 

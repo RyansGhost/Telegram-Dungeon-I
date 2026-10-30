@@ -41,35 +41,65 @@ XP and gold from a kill are split among everyone standing in the room.
 3. Configure and start:
 
    ```bash
-   cp .env.example .env   # then paste your token into .env
+   cp .env.example .env   # then set TELEGRAM_BOT_TOKEN and POSTGRES_PASSWORD in .env
    docker compose up -d --build
    docker compose logs -f
    ```
 
+This starts two containers: the bot, and **PostgreSQL 17**, which stores every chat's dungeon and
+every player's progress. The bot waits for the database to be healthy, then creates or upgrades its
+tables automatically (migrations in `priv/repo/migrations`) before it starts answering.
+
 The bot uses **long polling**, so it needs only outbound HTTPS to `api.telegram.org`.
-You don't need to open ports, set up a reverse proxy, or have a public URL. Game state lives in a
-DETS file on the `dungeon-data` volume (`/data/dungeon.dets`), so it survives restarts and upgrades.
+You don't need to open ports, set up a reverse proxy, or have a public URL. The database isn't
+exposed outside compose's private network either. Its files live on the `db-data` volume, so they
+survive restarts, rebuilds and `docker compose down` (but not `down -v`).
 
-The image is a multi-stage build: an OTP release on `debian:bookworm-slim` running as a non-root
-user (uid 1000), with a healthcheck. If you'd rather bind-mount a host directory than use a named
-volume, make sure it's writable by uid 1000.
+The bot image is a multi-stage build: an OTP release on `debian:bookworm-slim` running as a
+non-root user, with a healthcheck.
 
-Environment variables:
+Environment variables (in `.env`):
 
 | Variable | Default | |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | Required |
-| `DUNGEON_DB` | `/data/dungeon.dets` | State file path |
+| `POSTGRES_PASSWORD` | — | Required. Database password, set when the database is first created |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warning`, `error` |
 | `HTTPS_PROXY` | — | Optional outbound proxy, e.g. `http://proxy.lan:3128` |
+| `POOL_SIZE` | `5` | Database connections to keep open |
+| `SKIP_MIGRATIONS` | — | Set to `true` to stop the bot migrating the database on startup |
 
-Back up the game state:
+`DATABASE_URL` is set by `compose.yaml`. Set it yourself to use a PostgreSQL server of your own instead
+of the bundled one (and remove the `db` service).
+
+### Database
+
+What's stored: `dungeons` (one row per chat: seed, depth, entrance), `players` (one row per player per
+chat: HP, level, XP, gold, inventory, location) and `rooms` (the current floor, including monsters' HP
+and loot on the floor). Open a SQL shell:
 
 ```bash
-docker compose cp dungeon:/data/dungeon.dets ./dungeon-backup.dets
+docker compose exec db psql -U dungeon dungeon
 ```
 
-Attach a remote shell to the running node:
+```sql
+SELECT name, level, xp, gold, inventory FROM players ORDER BY level DESC;
+```
+
+Back up and restore:
+
+```bash
+docker compose exec -T db pg_dump -U dungeon dungeon > dungeon-backup.sql
+```
+
+```bash
+docker compose exec -T db psql -U dungeon dungeon < dungeon-backup.sql
+```
+
+The `postgres` image is pinned to major version 17. Moving to a newer major version needs a
+dump and restore: take a backup, change the image tag, delete the `db-data` volume, start, then restore.
+
+Attach a remote shell to the running bot:
 
 ```bash
 docker compose exec dungeon bin/dungeon remote
@@ -77,22 +107,31 @@ docker compose exec dungeon bin/dungeon remote
 
 ## Development
 
-Requires Elixir 1.17+ on OTP 27+. The project has **no third-party dependencies**: it uses OTP's
-built-in `:json` and `:httpc`.
+Requires Elixir 1.17+ on OTP 27+, and a PostgreSQL server. Dependencies are Ecto and Postgrex
+(database access) and Jason (JSON); Telegram calls use OTP's built-in `:httpc`. By default the
+app expects a local PostgreSQL with the `postgres`/`postgres` login; override with
+`TEST_DATABASE_URL` (tests) or `DATABASE_URL` (development). A throwaway one:
 
 ```bash
-mix test            # full suite
+docker run -d --name dungeon-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17-alpine
+```
+
+```bash
+mix deps.get
+mix test            # creates and migrates the test database, then runs the suite
 mix test --cover    # with coverage (CI requires 90%+)
-TELEGRAM_BOT_TOKEN=... iex -S mix
+mix ecto.create && TELEGRAM_BOT_TOKEN=... iex -S mix
 ```
 
 The test suite covers every game rule against a small hand-built dungeon
 (`test/support/fixtures.ex`), checks structural invariants of generated floors across
-many seeds, and exercises the HTTP client and poller end to end against an in-process
-fake Telegram server (`test/support/fake_telegram.ex`), so no network or token is needed.
+many seeds, checks that saves to PostgreSQL round-trip exactly (including through a scripted game
+and a failed, rolled-back save), and exercises the HTTP client and poller end to end against an
+in-process fake Telegram server (`test/support/fake_telegram.ex`), so no token is needed.
 
 CI (`.github/workflows/ci.yml`) checks formatting, compiles with warnings as errors,
-runs the tests with coverage on Elixir 1.17 and 1.18, and builds the Docker image.
+runs the tests with coverage on Elixir 1.17 and 1.18 against a PostgreSQL service container, and
+builds the Docker image.
 
 Layout (each module's docs explain how it works; `h Dungeon.Engine` in `iex -S mix` shows them):
 
@@ -101,5 +140,6 @@ Layout (each module's docs explain how it works; `h Dungeon.Engine` in `iex -S m
 - `lib/dungeon/world.ex`: seeded procedural floor generation (deterministic per seed + depth)
 - `lib/dungeon/engine.ex`: game rules as pure functions over `Dungeon.State`
 - `lib/dungeon/game_server.ex`: one GenServer per chat; serializes commands, persists changes, stops when idle
-- `lib/dungeon/store.ex`: DETS persistence
+- `lib/dungeon/store.ex`: PostgreSQL persistence (incremental, transactional saves); `repo.ex` and
+  `store/schemas.ex` define the connection and tables, `priv/repo/migrations/` the schema
 - `lib/dungeon/telegram/`: Bot API client, long-poll loop, and command parsing
